@@ -102,6 +102,13 @@ class Mixer:
         self.dry = np.zeros((2, self.n))
         self.send = np.zeros((2, self.n))  # to reverb
         self.amb = np.zeros((2, self.n))  # room tone (no extra reverb)
+        self.stems = {}
+        self.stem = "misc"
+
+    def _stem(self):
+        if self.stem not in self.stems:
+            self.stems[self.stem] = np.zeros((2, self.n))
+        return self.stems[self.stem]
 
     def place(self, sig, t, gain, pan, wet=0.18):
         """Equal-power pan (-1 left .. +1 right)."""
@@ -114,6 +121,9 @@ class Mixer:
         gl, gr = math.cos(a) * gain, math.sin(a) * gain
         self.dry[0, i0 : i0 + len(sig)] += gl * sig
         self.dry[1, i0 : i0 + len(sig)] += gr * sig
+        st = self._stem()
+        st[0, i0 : i0 + len(sig)] += gl * sig
+        st[1, i0 : i0 + len(sig)] += gr * sig
         self.send[0, i0 : i0 + len(sig)] += gl * wet * sig
         self.send[1, i0 : i0 + len(sig)] += gr * wet * sig
 
@@ -124,6 +134,9 @@ class Mixer:
         r = sig * np.sin(a) * gain_curve
         self.dry[0] += l
         self.dry[1] += r
+        st = self._stem()
+        st[0] += l
+        st[1] += r
         self.send[0] += wet * l
         self.send[1] += wet * r
 
@@ -177,6 +190,7 @@ class Foley:
         if held:  # hands damp the cube and add a lower body component
             y = addp(0.8 * y, modal(r, **self.HELD_BODY, dur=0.05, noise=0.1), 0.35)
         g, pan = self.persp.gain_pan(pos if pos is not None else self._cube_pos(t), t)
+        self.mix.stem = "cube_click"
         self.mix.place(y, t, 0.42 * strength * g, pan, wet=0.16)
         self.events.append((t, "clack", strength))
 
@@ -185,6 +199,7 @@ class Foley:
         y = modal(r, **self.PAD_TAP, dur=0.04, noise=0.25, noise_ms=0.5, noise_band=(600, 6000), attack_ms=0.25)
         y = lowpass(y, 5200, 2)
         g, pan = self.persp.gain_pan(pos if pos is not None else self._cube_pos(t), t)
+        self.mix.stem = "finger_tap"
         self.mix.place(y, t, 0.10 * strength * g, pan, wet=0.12)
         self.events.append((t, "tap", strength))
 
@@ -196,6 +211,7 @@ class Foley:
         if hand:  # robot fingertip pads + shell on the desk
             y = addp(0.7 * lowpass(y, 2500, 2), modal(r, **self.PAD_TAP, dur=0.04, noise=0.2), 0.25)
         g, pan = self.persp.gain_pan(pos, t)
+        self.mix.stem = "desk"
         self.mix.place(y, t, 0.30 * strength * g, pan, wet=0.22)
         self.events.append((t, "desk", strength))
 
@@ -213,7 +229,9 @@ class Foley:
         nz = bandpass(self.rng.normal(0, 1, n + 2048), band[0], band[1], 2)[2048:]
         nz /= np.std(nz) + 1e-9
         g, pan = self.persp.gain_pan(pos, t0)
-        self.mix.place(0.020 * strength * env * tex * nz, t0, g, pan, wet=0.2)
+        self.mix.stem = "cube_slide"
+        self.mix.place(0.016 * strength * env * tex * nz, t0, g, pan, wet=0.2)
+        self.events.append((t0, "slide", strength))
 
     # ---------------------------------------------------------------- score sections
     def cube_turns(self):
@@ -265,7 +283,7 @@ class Foley:
                 self.tap(g1 - 0.010, 0.5)
             r0, r1 = ins["rot"]
             # the whole cube turning in the hands: faint grip creak
-            self.slide(r0, r1, lambda x, r0=r0, r1=r1: P.QUARTER * P.min_jerk_d((x - r0) / (r1 - r0)) / (r1 - r0) * 3.0, self._cube_pos(r0), strength=0.35, band=(500, 3500))
+            self.slide(r0, r1, lambda x, r0=r0, r1=r1: P.QUARTER * P.min_jerk_d((x - r0) / (r1 - r0)) / (r1 - r0) * 3.0, self._cube_pos(r0), strength=0.6, band=(500, 3500))
         # set down on the desk
         t_down = T["down"][1]
         self.desk_hit(t_down - 0.004, 0.55, self._cube_pos(t_down), with_cube=True)
@@ -283,12 +301,12 @@ class Foley:
         n_ctl = int(self.dur * rate) + 2
         ts = np.arange(n_ctl) / rate
         groups = {
-            "arm_R": (["uparm_R", "forearm_R", "wroll_R", "hand_R"], 170.0, 520.0, db(-27)),
-            "arm_L": (["uparm_L", "forearm_L", "wroll_L", "hand_L"], 160.0, 500.0, db(-27)),
-            "fing_R": ([f"{f}{k}_R" for f in ("thumb", "index", "middle", "ring", "pinky") for k in (1, 2, 3)], 900.0, 820.0, db(-34)),
-            "fing_L": ([f"{f}{k}_L" for f in ("thumb", "index", "middle", "ring", "pinky") for k in (1, 2, 3)], 860.0, 800.0, db(-34)),
-            "head": (["neck", "head"], 240.0, 650.0, db(-30)),
-            "torso": (["spine", "chest"], 110.0, 380.0, db(-33)),
+            "arm_R": (["uparm_R", "forearm_R", "wroll_R", "hand_R"], 210.0, 0, db(-44)),
+            "arm_L": (["uparm_L", "forearm_L", "wroll_L", "hand_L"], 196.0, 0, db(-44)),
+            "fing_R": ([f"{f}{k}_R" for f in ("thumb", "index", "middle", "ring", "pinky") for k in (1, 2, 3)], 560.0, 0, db(-52)),
+            "fing_L": ([f"{f}{k}_L" for f in ("thumb", "index", "middle", "ring", "pinky") for k in (1, 2, 3)], 530.0, 0, db(-52)),
+            "head": (["neck", "head"], 290.0, 0, db(-46)),
+            "torso": (["spine", "chest"], 140.0, 0, db(-50)),
         }
         prev = None
         speeds = {g: np.zeros(n_ctl) for g in groups}
@@ -309,25 +327,26 @@ class Foley:
                 pos[g][i] = (0, -0.25, 1.0)
         n = self.mix.n
         tt = np.arange(n) / SR
+        self.mix.stem = "servo"
         for g, (names, f0, k, gain) in groups.items():
-            sp = np.convolve(speeds[g], np.ones(5) / 5, mode="same")
+            sp = np.convolve(speeds[g], np.ones(7) / 7, mode="same")
             s = np.interp(tt, ts, sp)
-            f = f0 + k * np.sqrt(s)
+            # BLDC + strain-wave gear: pitch rises with speed but saturates (bounded range)
+            f = f0 * (1.0 + 1.6 * (1.0 - np.exp(-s / 5.0)))
             ph = 2 * np.pi * np.cumsum(f) / SR
-            jitter = 1 + 0.004 * np.sin(2 * np.pi * 7.3 * tt + self.rng.uniform(0, 6))
-            tone = np.sin(ph * jitter) + 0.45 * np.sin(2 * ph + 0.3) + 0.22 * np.sin(3.02 * ph) + 0.10 * np.sin(5.1 * ph)
-            mesh = bandpass(self.rng.normal(0, 1, n), 900, 7000, 2)
-            mesh /= np.std(mesh)
-            amp = np.clip(s / 3.0, 0, 3.0) ** 0.75
-            amp = np.convolve(amp, np.ones(240) / 240, mode="same")  # 5 ms smoothing, no zipper noise
-            sig = (0.75 * tone + 0.25 * mesh * (0.4 + 0.6 * np.clip(s / 6, 0, 1))) * amp
-            sig = highpass(sig, 60, 2)
-            # perspective at 20 Hz
+            wob = 0.003 * np.sin(2 * np.pi * 6.1 * tt + self.rng.uniform(0, 6))
+            tone = np.sin(ph * (1 + wob)) + 0.35 * np.sin(2 * ph + 0.4) + 0.14 * np.sin(3 * ph + 1.1) + 0.07 * np.sin(4.73 * ph)
+            whir = bandpass(self.rng.normal(0, 1, n), 300, 2600, 2)
+            whir /= np.std(whir)
+            amp = (s / (s + 4.0)) ** 1.2
+            amp = np.convolve(amp, np.ones(384) / 384, mode="same")  # 8 ms smoothing
+            sig = (0.8 * tone + 0.35 * whir) * amp
+            sig = lowpass(highpass(sig, 80, 2), 5500, 4)
             gp = np.array([self.persp.gain_pan(self._source_pos(g, x), x) for x in np.arange(0, self.dur, 0.05)])
             gx = np.arange(0, self.dur, 0.05)
             gain_c = np.interp(tt, gx, gp[:, 0]) * gain
             pan_c = np.interp(tt, gx, gp[:, 1])
-            self.mix.place_stream(sig, gain_c, pan_c, wet=0.22)
+            self.mix.place_stream(sig, gain_c, pan_c, wet=0.25)
 
     def _source_pos(self, group, t):
         if group.startswith("arm") or group.startswith("fing"):
@@ -343,17 +362,19 @@ class Foley:
         n = self.mix.n
         tt = np.arange(n) / SR
         r = self.rng
+        self.mix.stem = "electronics"
         relay = modal(r, freqs=[1300, 2650, 4100], taus=[0.006, 0.004, 0.0025], amps=[1, 0.7, 0.4], dur=0.05, noise=0.5, noise_ms=0.4)
         g, pan = self.persp.gain_pan((0, 0.12, 1.06), T["eyes_on"])
         self.mix.place(relay, T["eyes_on"] - 0.06, 0.07 * g, pan, wet=0.15)
         self.events.append((T["eyes_on"] - 0.06, "relay", 1))
         # idle drive hum (switching regulators / holding torque)
         on = np.clip((tt - T["eyes_on"]) / 0.6, 0, 1)
-        hum = (np.sin(2 * np.pi * 1190 * tt) + 0.3 * np.sin(2 * np.pi * 2380 * tt)) * on
+        am = 1 + 0.25 * np.sin(2 * np.pi * 0.7 * tt) + 0.15 * np.sin(2 * np.pi * 3.1 * tt)
+        hum = (np.sin(2 * np.pi * 1190 * tt + 0.8 * np.sin(2 * np.pi * 0.3 * tt)) + 0.3 * np.sin(2 * np.pi * 2380 * tt)) * on * am
         hum += 0.6 * bandpass(r.normal(0, 1, n), 4000, 9000, 2) * on * 0.25
         gp = np.array([self.persp.gain_pan((0, 0.05, 1.05), x) for x in np.arange(0, self.dur, 0.05)])
         gx = np.arange(0, self.dur, 0.05)
-        self.mix.place_stream(hum, np.interp(tt, gx, gp[:, 0]) * db(-58), np.interp(tt, gx, gp[:, 1]), wet=0.2)
+        self.mix.place_stream(hum, np.interp(tt, gx, gp[:, 0]) * db(-70), np.interp(tt, gx, gp[:, 1]), wet=0.2)
         # fan: spins up while thinking, holds during the solve, spins down after
         t_up, t_dn = T["think"][0], self.c.solve.t_end + 1.2
         rpm = np.clip((tt - t_up) / 1.1, 0, 1) * np.clip(1 - (tt - t_dn) / 2.0, 0, 1)
@@ -384,8 +405,9 @@ class Foley:
             car_env = np.exp(-((tt - 8.6) / 1.8) ** 2) * (0.8 if ch else 1.0)
             # 100 Hz electrical hum from the LED drivers (barely there)
             mains = np.sin(2 * np.pi * 100 * tt + ch * 0.4) + 0.3 * np.sin(2 * np.pi * 300 * tt)
-            x = db(-54) * hvac + db(-62) * air + db(-58) * city * swell + db(-60) * car * car_env + db(-74) * mains
+            x = db(-64) * hvac + db(-71) * air + db(-67) * city * swell + db(-68) * car * car_env + db(-82) * mains
             self.mix.amb[ch] += x
+        self.mix.stems["room_tone"] = self.mix.amb.copy()
 
     # ---------------------------------------------------------------- render
     def render(self, rig, verbose=True):
@@ -401,7 +423,7 @@ class Foley:
         return out
 
     @staticmethod
-    def master(x, target_lufs=-20.0, ceiling_dbtp=-1.5):
+    def master(x, target_lufs=-23.0, ceiling_dbtp=-1.5):
         """Loudness normalise (BS.1770 integrated) and true-peak limit."""
         x = x * db(target_lufs - integrated_lufs(x))
         # look-ahead brick-wall limiter on 4x oversampled peaks

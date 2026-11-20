@@ -4,17 +4,17 @@ from __future__ import annotations
 import bpy
 
 PRESETS = {
-    # name: (resolution %, samples, adaptive threshold, motion blur steps)
-    "draft": (50, 24, 0.05),
-    "preview": (66, 64, 0.03),
-    "final": (100, 384, 0.012),
-    "cinema4k": (200, 512, 0.01),
+    # name: (resolution %, samples, adaptive threshold, fast GI / reduced bounces)
+    "draft": (50, 16, 0.05, True),
+    "preview": (66, 20, 0.035, True),  # 1280x720, CPU friendly (~30-45 s/frame on 4 cores)
+    "final": (100, 256, 0.012, False),  # 1920x1080, full GI (GPU recommended)
+    "cinema4k": (200, 512, 0.01, False),
 }
 
 
 def configure(preset="preview", frame_end=None, use_gpu=False):
     sc = bpy.context.scene
-    pct, samples, thr = PRESETS[preset]
+    pct, samples, thr, fast = PRESETS[preset]
     r = sc.render
     r.engine = "CYCLES"
     r.resolution_x = 1920
@@ -51,6 +51,18 @@ def configure(preset="preview", frame_end=None, use_gpu=False):
     cy.caustics_reflective = False
     cy.caustics_refractive = False
     cy.blur_glossy = 0.5
+    if fast:
+        cy.diffuse_bounces = 2
+        cy.glossy_bounces = 3
+        cy.transmission_bounces = 6
+        cy.max_bounces = 8
+        cy.use_fast_gi = True
+        cy.fast_gi_method = "REPLACE"
+        cy.ao_bounces_render = 1
+        if sc.world:
+            sc.world.light_settings.distance = 3.0
+    else:
+        cy.use_fast_gi = False
     cy.sample_clamp_direct = 0.0
     cy.sample_clamp_indirect = 6.0
     try:

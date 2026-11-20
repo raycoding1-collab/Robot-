@@ -1,0 +1,24 @@
+[PASS] duration matches picture: 20.87500s vs 20.87500s (501 frames)
+[PASS] finite samples: no NaN/Inf
+[PASS] DC offset: 2.32e-07
+[PASS] sample peak <= -1 dBFS: -6.16 dBFS
+[PASS] true peak <= -1 dBTP: -6.15 dBTP (4x oversampled)
+[PASS] no clipped samples: 0
+[PASS] integrated loudness (EBU R128 short-form): -23.00 LUFS (target -23)
+[PASS] ffmpeg EBU R128 agrees: I=-23.0 LUFS, TP=-6.1 dBFS
+[PASS] no discontinuities / pops: 0 ultrasonic spikes outside impact events
+[PASS] mono-compatible stereo: L/R correlation 0.97
+[PASS] room tone audible but quiet: -56.7 dBFS RMS before power-on
+[PASS] every layer-turn click detected: 28/28 found
+[PASS] click timing vs physics: mean -0.39 ms, max |2.86| ms
+[PASS] click occurs when the layer reaches 90 deg in the animation: 28/28 turns
+[PASS] no unexplained transients: 0 stray onsets
+      click peak (median) -8.2 dBFS | slide rms -35.5 | servo rms (solve) -50.1, loudest 100 ms -44.5 | tap peak -21.5 | room tone rms -56.6
+[PASS] clicks are the loudest cube sound: median click peak -8.2 dBFS
+[PASS] slide noise sits under the clicks: -27.3 dB re click peak
+[PASS] servo whir is subtle: loudest servo 100 ms -36.2 dB re click peak
+[PASS] finger taps softer than clicks: -13.3 dB re click peak
+[PASS] room tone level: -56.6 dBFS RMS
+[PASS] no audible steady whine (1-8 kHz): max tonal prominence 8.9 dB
+
+21/21 checks passed

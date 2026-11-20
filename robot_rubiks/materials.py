@@ -363,7 +363,7 @@ def cube_tile(color_name):
     b.inputs["Subsurface Weight"].default_value = 0.08
     b.inputs["Subsurface Radius"].default_value = (0.001, 0.001, 0.001)
     # frosted matte finish typical of stickerless speed cubes, handled = smudged
-    _imperfections(nb, b, srgb_to_lin(CUBE_COLORS_SRGB[color_name]), 0.24, 0.42, coat=0.3, peel=0.02, smudge=0.6, scratch=0.5, dirt=0.0, tint_var=0.015)
+    _imperfections(nb, b, srgb_to_lin(CUBE_COLORS_SRGB[color_name]), 0.30, 0.46, coat=0.12, peel=0.02, smudge=0.6, scratch=0.5, dirt=0.0, tint_var=0.015)
     return m
 
 

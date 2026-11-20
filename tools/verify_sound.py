@@ -1,0 +1,246 @@
+"""Objective checks for renders/foley.wav against the simulation events.
+
+    python tools/verify_sound.py [--dir renders]
+Writes spectrogram/waveform PNGs next to the wav and prints a PASS/FAIL report.
+"""
+import argparse
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import wave
+
+sys.path.insert(0, __file__.rsplit("/tools/", 1)[0])
+import bpy  # noqa: F401,E402  (mathutils for robot_rubiks imports)
+import numpy as np  # noqa: E402
+from scipy import signal  # noqa: E402
+
+from robot_rubiks import sound  # noqa: E402
+from robot_rubiks.choreography import Choreography  # noqa: E402
+from robot_rubiks.rig_def import FPS  # noqa: E402
+
+SR = sound.SR
+
+
+def read_wav(path):
+    with wave.open(path, "rb") as w:
+        n, ch, sw, sr = w.getnframes(), w.getnchannels(), w.getsampwidth(), w.getframerate()
+        raw = w.readframes(n)
+    assert sw == 3 and ch == 2 and sr == SR, (sw, ch, sr)
+    b = np.frombuffer(raw, np.uint8).reshape(-1, 3)
+    v = (b[:, 0].astype(np.int32) | (b[:, 1].astype(np.int32) << 8) | (b[:, 2].astype(np.int32) << 16))
+    v = np.where(v & 0x800000, v - 0x1000000, v)
+    return (v.reshape(-1, 2).T / 8388607.0), sr
+
+
+def onsets(x, band=(2000, 12000), hop_ms=1.0, ratio_db=9.0, floor_db=-45.0, min_gap=0.010):
+    """Robust transient detector: HF energy jump vs. the median of the preceding 30 ms."""
+    m = x.mean(axis=0)
+    h = sound.bandpass(m, band[0], band[1], 4)
+    hop = int(hop_ms / 1000 * SR)
+    e = np.add.reduceat(h ** 2, np.arange(0, len(h), hop)) / hop
+    edb = 10 * np.log10(e + 1e-15)
+    ref = np.array([np.median(edb[max(0, i - 30): max(1, i - 2)]) for i in range(len(edb))])
+    top = edb.max()
+    cand = (edb - ref > ratio_db) & (edb > top + floor_db)
+    idx = np.flatnonzero(cand)
+    out = []
+    for i in idx:
+        if not out or (i - out[-1]) * hop_ms / 1000 > min_gap:
+            out.append(i)
+    return np.array(out) * hop / SR, edb
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dir", default=os.path.join(__file__.rsplit("/tools/", 1)[0], "renders"))
+    a = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:])
+    path = os.path.join(a.dir, "foley.wav")
+    x, sr = read_wav(path)
+    c = Choreography()
+    n_frames = int(c.duration * FPS)
+    results = []
+
+    def check(name, ok, detail):
+        results.append((name, ok, detail))
+        print(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    # 1. format / duration
+    dur = x.shape[1] / sr
+    check("duration matches picture", abs(dur - n_frames / FPS) < 1 / sr + 1e-9, f"{dur:.5f}s vs {n_frames / FPS:.5f}s ({n_frames} frames)")
+    check("finite samples", bool(np.all(np.isfinite(x))), "no NaN/Inf")
+    dc = np.abs(x.mean(axis=1)).max()
+    check("DC offset", dc < 1e-4, f"{dc:.2e}")
+    peak = 20 * math.log10(np.abs(x).max())
+    check("sample peak <= -1 dBFS", peak <= -1.0, f"{peak:.2f} dBFS")
+    up = signal.resample_poly(x, 4, 1, axis=1)
+    tp = 20 * math.log10(np.abs(up).max())
+    check("true peak <= -1 dBTP", tp <= -1.0, f"{tp:.2f} dBTP (4x oversampled)")
+    clip = int(np.sum(np.abs(x) > 0.999))
+    check("no clipped samples", clip == 0, f"{clip}")
+    lufs = sound.integrated_lufs(x)
+    check("integrated loudness (EBU R128 short-form)", abs(lufs + 23) < 0.5, f"{lufs:.2f} LUFS (target -23)")
+    # independent loudness measurement via ffmpeg's EBU R128 meter
+    try:
+        r = subprocess.run(["ffmpeg", "-nostats", "-i", path, "-af", "ebur128=peak=true", "-f", "null", "-"], capture_output=True, text=True)
+        tail = r.stderr[r.stderr.rfind("Summary:"):]
+        I = float(re.search(r"I:\s+(-?[\d.]+) LUFS", tail).group(1))
+        TP = float(re.search(r"Peak:\s+(-?[\d.]+) dBFS", tail).group(1))
+        check("ffmpeg EBU R128 agrees", abs(I - lufs) < 1.0 and TP <= -1.0, f"I={I} LUFS, TP={TP} dBFS")
+    except Exception as e:  # pragma: no cover
+        check("ffmpeg EBU R128 agrees", False, str(e))
+    # 2. discontinuities (pops): ultrasonic-band spikes away from any scheduled impact
+    ev_all = np.array([e["t"] for e in json.load(open(os.path.join(a.dir, "foley_events.json")))])
+    hf = sound.highpass(x.mean(axis=0), 17000, 6)
+    env_hf = np.abs(hf)
+    win = int(0.002 * SR)
+    loc = np.sqrt(np.convolve(hf ** 2, np.ones(win * 10) / (win * 10), mode="same")) + 1e-9
+    spikes = np.flatnonzero((env_hf > 12 * loc) & (env_hf > 1e-3))  # audible (> -60 dBFS) ultrasonic spikes
+    spikes = [i for i in spikes if np.min(np.abs(ev_all - i / SR)) > 0.010]
+    if spikes:
+        print("      spike times:", [round(i / SR, 4) for i in spikes[:12]])
+    check("no discontinuities / pops", len(spikes) == 0, f"{len(spikes)} ultrasonic spikes outside impact events")
+    # 3. stereo sanity
+    corr = np.corrcoef(x[0], x[1])[0, 1]
+    check("mono-compatible stereo", corr > 0.2, f"L/R correlation {corr:.2f}")
+    # silence before power-on should be near room tone only
+    pre = x[:, : int(0.2 * sr)]
+    pre_db = 20 * math.log10(np.sqrt(np.mean(pre ** 2)) + 1e-12)
+    check("room tone audible but quiet", -75 < pre_db < -45, f"{pre_db:.1f} dBFS RMS before power-on")
+
+    # 4. sync: every simulated magnet capture must produce a click within 4 ms
+    ev = json.load(open(os.path.join(a.dir, "foley_events.json")))
+    clacks = np.array([e["t"] for e in ev if e["kind"] == "clack"])
+    det, env = onsets(x)
+    offs = []
+    missed = []
+    for t in clacks:
+        if len(det) == 0:
+            missed.append(t)
+            continue
+        k = np.argmin(np.abs(det - t))
+        o = det[k] - t
+        if abs(o) <= 0.004:
+            offs.append(o)
+        else:
+            missed.append(t)
+    offs = np.array(offs) * 1000
+    check("every layer-turn click detected", len(missed) == 0, f"{len(clacks) - len(missed)}/{len(clacks)} found" + (f", missed at {[round(m, 3) for m in missed]}" if missed else ""))
+    if len(offs):
+        check("click timing vs physics", np.max(np.abs(offs)) <= 3.0, f"mean {offs.mean():+.2f} ms, max |{np.max(np.abs(offs)):.2f}| ms")
+    # turns vs picture: capture instants fall on the frames where the layer reaches 90 deg
+    s = c.solve
+    bad = 0
+    for tr in s.turns:
+        tc = [e for e in clacks if tr.t0 <= e <= tr.t_end + 0.01]
+        if not tc:
+            bad += 1
+            continue
+        ang = abs(tr.angle(tc[0]))
+        if not (math.radians(85) <= ang <= math.radians(95)):
+            bad += 1
+    check("click occurs when the layer reaches 90 deg in the animation", bad == 0, f"{len(s.turns) - bad}/{len(s.turns)} turns")
+    # unexpected transients: detected onsets not explained by any scheduled event
+    # physically active intervals: impacts ring for ~25 ms, a sliding layer sounds until its magnet capture
+    active = []
+    for e in ev:
+        if e["kind"] == "slide":
+            nxt = clacks[clacks > e["t"]]
+            active.append((e["t"] - 0.003, (nxt[0] if len(nxt) else e["t"] + 0.6) + 0.025))
+        else:
+            active.append((e["t"] - 0.005, e["t"] + 0.025))
+    stray = [t for t in det if not any(a0 <= t <= a1 for a0, a1 in active)]
+    check("no unexplained transients", len(stray) == 0, f"{len(stray)} stray onsets" + (f" at {[round(t, 3) for t in stray[:10]]}" if stray else ""))
+
+    # 5. mix balance from the stems (all at master gain)
+    stems = dict(np.load(os.path.join(a.dir, "foley_stems.npz")))
+    def pk(v):
+        return 20 * math.log10(np.abs(v).max() + 1e-12)
+    def rms_win(v, t0, t1):
+        i0, i1 = int(t0 * SR), int(t1 * SR)
+        return 20 * math.log10(np.sqrt(np.mean(v[:, i0:i1] ** 2)) + 1e-12)
+    click_peaks = []
+    for t in clacks:
+        i = int(t * SR)
+        click_peaks.append(20 * math.log10(np.abs(stems["cube_click"][:, i: i + int(0.02 * SR)]).max() + 1e-12))
+    cp = float(np.median(click_peaks))
+    sl = stems["cube_slide"]
+    slide_db = max(20 * math.log10(np.sqrt(np.mean(sl[:, int(tr.t0 * SR): int((tr.t0 + 0.04) * SR)] ** 2)) + 1e-12) for tr in s.turns)
+    serv = rms_win(stems["servo"], s.t_start, s.t_end)
+    serv_pk_win = max(rms_win(stems["servo"], t, t + 0.1) for t in np.arange(1.0, c.duration - 0.2, 0.05))
+    tap_pk = pk(stems["finger_tap"])
+    room = rms_win(stems["room_tone"], 0.5, c.duration - 0.5)
+    print(f"      click peak (median) {cp:.1f} dBFS | slide rms {slide_db:.1f} | servo rms (solve) {serv:.1f}, loudest 100 ms {serv_pk_win:.1f} | tap peak {tap_pk:.1f} | room tone rms {room:.1f}")
+    check("clicks are the loudest cube sound", -14 <= cp <= -2, f"median click peak {cp:.1f} dBFS")
+    check("slide noise sits under the clicks", -32 <= slide_db - cp <= -14, f"{slide_db - cp:+.1f} dB re click peak")
+    check("servo whir is subtle", serv_pk_win - cp <= -20, f"loudest servo 100 ms {serv_pk_win - cp:+.1f} dB re click peak")
+    check("finger taps softer than clicks", -24 <= tap_pk - cp <= -3, f"{tap_pk - cp:+.1f} dB re click peak")
+    check("room tone level", -66 <= room <= -50, f"{room:.1f} dBFS RMS")
+
+    # tonal whine check: no steady narrow-band line > 15 dB above the local spectral floor (1-8 kHz)
+    seg = x.mean(axis=0)[int(6.0 * SR): int(9.0 * SR)]
+    fz, Pz = signal.welch(seg, SR, nperseg=16384)
+    band = (fz > 1000) & (fz < 8000)
+    pdb = 10 * np.log10(Pz[band] + 1e-20)
+    floor = signal.medfilt(pdb, 101)
+    prom = float(np.max(pdb - floor))
+    check("no audible steady whine (1-8 kHz)", prom < 15, f"max tonal prominence {prom:.1f} dB")
+
+    # 6. pictures
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        m = x.mean(axis=0)
+        fig, axs = plt.subplots(3, 1, figsize=(16, 11))
+        f, t, S = signal.spectrogram(m, SR, nperseg=2048, noverlap=1536)
+        axs[0].pcolormesh(t, f, 10 * np.log10(S + 1e-14), shading="auto", vmin=-150, vmax=-50, cmap="magma")
+        axs[0].set_yscale("symlog", linthresh=200)
+        axs[0].set_ylim(30, 24000)
+        axs[0].set_title("Full mix spectrogram")
+        for k, v in c.T.items():
+            if isinstance(v, float):
+                axs[0].axvline(v, color="cyan", lw=0.4)
+        t0, t1 = s.t_start - 0.1, s.t_start + 1.6
+        i0, i1 = int(t0 * SR), int(t1 * SR)
+        f2, t2, S2 = signal.spectrogram(m[i0:i1], SR, nperseg=512, noverlap=448)
+        axs[1].pcolormesh(t2 + t0, f2, 10 * np.log10(S2 + 1e-14), shading="auto", vmin=-150, vmax=-50, cmap="magma")
+        for tt in clacks:
+            if t0 < tt < t1:
+                axs[1].axvline(tt, color="cyan", lw=0.6)
+        axs[1].set_title("Solve (first 1.6 s): cyan = simulated magnet captures")
+        tt = np.arange(i0, i1) / SR
+        axs[2].plot(tt, x[0, i0:i1], lw=0.4, label="L")
+        axs[2].plot(tt, x[1, i0:i1], lw=0.4, alpha=0.7, label="R")
+        for e in clacks:
+            if t0 < e < t1:
+                axs[2].axvline(e, color="k", lw=0.4)
+        axs[2].legend()
+        axs[2].set_title("Waveform (solve)")
+        plt.tight_layout()
+        plt.savefig(os.path.join(a.dir, "foley_analysis.png"), dpi=80)
+        # single event zoom
+        fig, axs = plt.subplots(1, 2, figsize=(14, 4))
+        e = clacks[len(clacks) // 2]
+        j0, j1 = int((e - 0.03) * SR), int((e + 0.08) * SR)
+        axs[0].plot(np.arange(j0, j1) / SR - e, m[j0:j1], lw=0.6)
+        axs[0].set_title("One layer-turn click (t=0: magnet capture)")
+        fz, Pz = signal.welch(m[int(e * SR): int((e + 0.05) * SR)], SR, nperseg=1024)
+        axs[1].semilogx(fz, 10 * np.log10(Pz + 1e-16))
+        axs[1].set_xlim(100, 20000)
+        axs[1].set_title("Click spectrum")
+        plt.tight_layout()
+        plt.savefig(os.path.join(a.dir, "foley_click.png"), dpi=80)
+    except Exception as ex:
+        print("plotting skipped:", ex)
+    n_fail = sum(1 for r in results if not r[1])
+    print(f"\n{len(results) - n_fail}/{len(results)} checks passed")
+    return n_fail
+
+
+if __name__ == "__main__":
+    sys.exit(main())
