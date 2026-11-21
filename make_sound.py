@@ -30,9 +30,8 @@ def main():
     rig = animate.Rig({}, c)
     fol = sound.Foley(c, shots)
     raw = fol.render(rig)
-    x = sound.Foley.master(raw)
-    # stems at the same master gain, for balance verification
-    g = 10 ** ((-23.0 - sound.integrated_lufs(raw)) / 20)
+    x, g = sound.Foley.master(raw, return_gain=True)
+    # stems through exactly the same master gain curve (normalisation, compression, limiting)
     np.savez_compressed(os.path.join(a.out, "foley_stems.npz"), **{k: (v * g).astype(np.float32) for k, v in fol.mix.stems.items()})
     path = os.path.join(a.out, "foley.wav")
     sound.write_wav(path, x)

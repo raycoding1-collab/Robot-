@@ -35,21 +35,37 @@ def read_wav(path):
     return (v.reshape(-1, 2).T / 8388607.0), sr
 
 
-def onsets(x, band=(2000, 12000), hop_ms=1.0, ratio_db=9.0, floor_db=-45.0, min_gap=0.010):
-    """Robust transient detector: HF energy jump vs. the median of the preceding 30 ms."""
+def onsets(x, band=(1000, 12000), hop_ms=1.0, win_ms=2.0, ratio_db=9.0, floor_db=-45.0, min_gap=0.010):
+    """Robust transient detector: band energy jump vs. the median of the preceding 30 ms.
+
+    Energy is measured in 2 ms windows: in 1 ms windows band-limited noise (motor whir, fan)
+    swings by +-10 dB from one window to the next purely by chance, which is not a transient."""
     m = x.mean(axis=0)
     h = sound.bandpass(m, band[0], band[1], 4)
     hop = int(hop_ms / 1000 * SR)
-    e = np.add.reduceat(h ** 2, np.arange(0, len(h), hop)) / hop
+    w = int(win_ms / 1000 * SR)
+    p = np.convolve(h ** 2, np.ones(w) / w, mode="full")[w - 1:]  # trailing-edge aligned: window starts at the sample
+    e = p[::hop][: int(np.ceil(len(h) / hop))]
     edb = 10 * np.log10(e + 1e-15)
     ref = np.array([np.median(edb[max(0, i - 30): max(1, i - 2)]) for i in range(len(edb))])
     top = edb.max()
     cand = (edb - ref > ratio_db) & (edb > top + floor_db)
     idx = np.flatnonzero(cand)
-    out = []
+    # peak picking: within each group of candidates closer than min_gap keep the strongest
+    # jump, so a small grain just before a click cannot mask the click itself
+    jump = edb - ref
+    groups = []
     for i in idx:
-        if not out or (i - out[-1]) * hop_ms / 1000 > min_gap:
-            out.append(i)
+        if groups and (i - groups[-1][-1]) * hop_ms / 1000 <= min_gap:
+            groups[-1].append(i)
+        else:
+            groups.append([i])
+    # time-stamp each event at the rising edge of its strongest transient: the earliest
+    # candidate at most 3 ms before the strongest jump (an earlier grain is a separate event)
+    out = []
+    for g in groups:
+        p = max(g, key=lambda i: jump[i])
+        out.append(min(i for i in g if 0 <= (p - i) * hop_ms <= 3.0))
     return np.array(out) * hop / SR, edb
 
 
@@ -188,7 +204,58 @@ def main():
     prom = float(np.max(pdb - floor))
     check("no audible steady whine (1-8 kHz)", prom < 15, f"max tonal prominence {prom:.1f} dB")
 
-    # 6. pictures
+    # 6. listening comfort and realism of the cube sound
+    def kdb(v, t0, t1):
+        y = sound.k_weight(v[:, int(t0 * SR): int(t1 * SR)])
+        return -0.691 + 10 * math.log10(np.sum(np.mean(y ** 2, axis=1)) + 1e-20)
+    insp0, solve0, solve1 = 3.0, s.t_start - 0.3, s.t_end + 0.2
+    jump = kdb(x, solve0, solve1) - kdb(x, insp0, solve0)
+    check("no loudness jump into the solve", jump <= 12.0, f"solve is {jump:+.1f} LU above the inspection (limit +12)")
+    # each click must be a short damped plastic contact, not a ringing tone
+    rings, qs = [], []
+    ck = stems["cube_click"].mean(axis=0)
+    for t in clacks:
+        i = int(t * SR)
+        y = ck[i: i + int(0.08 * SR)]
+        env = np.sqrt(np.convolve(y ** 2, np.ones(48) / 48, mode="same"))
+        p = int(np.argmax(env))
+        below = np.flatnonzero(env[p:] < env[p] * 0.01)
+        rings.append(1000 * below[0] / SR if len(below) else 80.0)
+        # quality factor of the strongest resonance: Q = f0 / (-3 dB bandwidth).
+        # A hand-held plastic cubie is damped to Q ~ 10-20; a small bell rings at Q ~ 100.
+        fz, Pz = signal.periodogram(np.pad(y, (0, 32768 - len(y))), SR)
+        bz = np.flatnonzero((fz > 500) & (fz < 8000))
+        k0 = bz[np.argmax(Pz[bz])]
+        half = Pz[k0] / 2
+        lo, hi = k0, k0
+        while lo > 0 and Pz[lo] > half:
+            lo -= 1
+        while hi < len(Pz) - 1 and Pz[hi] > half:
+            hi += 1
+        qs.append(fz[k0] / max(fz[hi] - fz[lo], 1e-9))
+    check("clicks are short contacts, not ringing tones", np.median(rings) <= 25 and np.median(qs) <= 30,
+          f"ring-down to -40 dB {np.median(rings):.1f} ms (limit 25), strongest resonance Q {np.median(qs):.0f} (limit 30)")
+    # the turning sound is stick-slip friction (impulsive grains), not smooth hiss. Kurtosis is
+    # measured after dividing out the 5 ms RMS envelope, so the speed envelope does not count:
+    # Gaussian hiss gives ~3 whatever its envelope.
+    kur = []
+    w5 = int(0.005 * SR)
+    for tr in s.turns:
+        v = stems["cube_slide"].mean(axis=0)[int(tr.t0 * SR): int((tr.t0 + 0.05) * SR)]
+        if np.std(v) > 0:
+            u = v / (np.sqrt(np.convolve(v ** 2, np.ones(w5) / w5, mode="same")) + 1e-12)
+            u = u[w5:-w5]
+            kur.append(np.mean((u - u.mean()) ** 4) / np.var(u) ** 2)
+    check("turning sound is grainy plastic friction, not hiss", np.median(kur) >= 4.5, f"median envelope-normalised kurtosis {np.median(kur):.1f} (smooth hiss ~3, limit 4.5)")
+    # no single pitch region dominates the solve (the old ringing clicks put ~40 % of the energy near 1.9 kHz)
+    seg = x.mean(axis=0)[int(solve0 * SR): int(solve1 * SR)]
+    fz, Pz = signal.welch(seg, SR, nperseg=8192)
+    centers = 1000 * 2 ** (np.arange(-12, 13) / 3)
+    shares = [Pz[(fz >= fc * 2 ** (-1 / 6)) & (fz < fc * 2 ** (1 / 6))].sum() / Pz[fz >= 20].sum() for fc in centers]
+    k = int(np.argmax(shares))
+    check("no dominant pitch region in the solve", shares[k] <= 0.20, f"largest third-octave band {100 * shares[k]:.1f} % of energy at {centers[k]:.0f} Hz (limit 20 %)")
+
+    # 7. pictures
     try:
         import matplotlib
 

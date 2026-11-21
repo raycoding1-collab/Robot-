@@ -27,6 +27,7 @@ def args_():
     ap.add_argument("--pct", type=int, default=None)
     ap.add_argument("--out", default=os.path.join(HERE, "renders"))
     ap.add_argument("--encode", action="store_true")
+    ap.add_argument("--reaudio", action="store_true", help="replace the sound in the existing MP4s with renders/foley.wav (video stream copied, not re-encoded)")
     ap.add_argument("--target-mb", type=float, default=None, help="with --encode: two-pass encode that fits this many MB (10^6 bytes)")
     ap.add_argument("--gpu", action="store_true")
     ap.add_argument("--threads", type=int, default=0)
@@ -154,9 +155,35 @@ def encode(a):
     print(f"wrote {out}: {fit[1]} B, {fit[1] / limit:.2%} of the cap", flush=True)
 
 
+def reaudio(a):
+    """Swap in a new foley.wav without touching the picture: the H.264 stream is copied bit for bit."""
+    import glob
+
+    audio = os.path.join(a.out, "foley.wav")
+    if not os.path.exists(audio):
+        sys.exit("reaudio: renders/foley.wav not found (run make_sound.py)")
+    for mp4 in sorted(glob.glob(os.path.join(a.out, "robot_rubiks*.mp4"))):
+        if mp4.endswith(".part.mp4"):
+            continue
+        tmp = mp4[:-4] + ".part.mp4"
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", mp4, "-i", audio, "-map", "0:v:0", "-map", "1:a:0",
+                        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-shortest",
+                        "-movflags", "+faststart", tmp], check=True)
+        name = os.path.basename(mp4)
+        if "MB." in name:  # size-capped copy: it must still fit
+            cap = float(name.rsplit("_", 1)[1].split("MB")[0]) * 1_000_000
+            if os.path.getsize(tmp) > cap:
+                os.remove(tmp)
+                sys.exit(f"reaudio: {name} would exceed {cap:.0f} bytes; re-encode with --encode --target-mb")
+        os.replace(tmp, mp4)
+        print(f"{name}: new sound, {os.path.getsize(mp4)} bytes")
+
+
 if __name__ == "__main__":
     a = args_()
-    if a.encode:
+    if a.reaudio:
+        reaudio(a)
+    elif a.encode:
         encode(a)
     else:
         render(a)

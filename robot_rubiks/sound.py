@@ -75,6 +75,93 @@ def modal(rng, freqs, taus, amps, dur=0.12, jitter=0.035, noise=0.35, noise_ms=0
     return y
 
 
+def impact(rng, freqs, taus, amps, contact_ms=0.4, dur=0.06, jitter=0.06, grit=0.12, grit_band=(700, 5500)):
+    """Hertzian impact: a half-sine contact force of finite duration excites damped modes.
+
+    The contact time low-passes the excitation (spectrum falls off above ~1/contact),
+    so a soft, short-lived plastic contact gives a "tock" instead of a bright ping.
+    """
+    n = int(dur * SR)
+    t = np.arange(n) / SR
+    modes = np.zeros(n)
+    for f, tau, a in zip(freqs, taus, amps):
+        ff = f * (1 + rng.normal(0, jitter))
+        tt = tau * (1 + rng.normal(0, 0.12))
+        aa = a * (1 + rng.normal(0, 0.2))
+        modes += aa * np.exp(-t / tt) * np.sin(2 * np.pi * ff * t + rng.uniform(-0.3, 0.3))
+    k = max(2, int(contact_ms / 1000 * SR))
+    force = np.sin(np.pi * np.arange(k) / k)
+    y = signal.fftconvolve(modes, force)[:n]
+    if grit > 0:  # surface roughness of the sliding faces at the moment of capture
+        g = rng.normal(0, 1, n) * np.exp(-t / 0.0015)
+        g = bandpass(g, grit_band[0], grit_band[1], 2)
+        y = y / (np.max(np.abs(y)) + 1e-12) + grit * g / (np.max(np.abs(g)) + 1e-12)
+    fade = np.ones(n)
+    m = int(0.006 * SR)
+    fade[-m:] = np.linspace(1, 0, m)
+    y *= fade
+    return y / (np.max(np.abs(y)) + 1e-12)
+
+
+# A cubie is a ~19 mm hollow ABS shell with ~1.3 mm walls. Its lowest shell modes lie between
+# about 1.3 and 6 kHz. Pressed against its neighbours and held in two hands, it is damped to
+# Q ~ 12-18, so the modes die within a few milliseconds.
+CUBIE_MODES = dict(freqs=[1350, 2250, 3250, 4550, 6100], taus=[0.0032, 0.0023, 0.0016, 0.0011, 0.0008], amps=[0.7, 1.0, 0.85, 0.55, 0.3])
+# The whole cube in the hands: hollow 57 mm body plus core, heavily damped (the "thock").
+CUBE_BODY = dict(freqs=[540, 900, 1450], taus=[0.0045, 0.0032, 0.0022], amps=[0.8, 0.6, 0.35])
+
+
+def cubie_contact(rng, contact_ms, dur=0.03, grit=0.12):
+    """One hard plastic-on-plastic contact exciting one cubie (each cubie is slightly different)."""
+    scale = rng.uniform(0.85, 1.15)
+    m = dict(freqs=[f * scale for f in CUBIE_MODES["freqs"]], taus=CUBIE_MODES["taus"], amps=CUBIE_MODES["amps"])
+    return impact(rng, **m, contact_ms=contact_ms, dur=dur, jitter=0.05, grit=grit, grit_band=(1500, 9000))
+
+
+def capture_click(rng, speed=0.5, held=True):
+    """Magnets pull a turning layer into alignment: 2-4 of its cubies seat against their
+    neighbours within ~3 ms, so one capture is a short cluster of hard contacts plus the
+    damped body of the cube. speed 0..1 = how fast the layer arrives."""
+    n = int(0.05 * SR)
+    y = np.zeros(n)
+    k = int(rng.integers(2, 5))
+    offs = np.sort(rng.uniform(0, 0.0028, k))
+    offs[0] = 0.0
+    for i, o in enumerate(offs):
+        a = 1.0 if i == 0 else rng.uniform(0.25, 0.7)
+        # Hertz contact time of a ~10 g ABS cubie meeting its neighbour: ~0.43 ms at 0.3 m/s,
+        # ~0.35 ms at the 0.85 m/s edge speed of a fast flick (t ~ v^-1/5)
+        c = cubie_contact(rng, contact_ms=rng.uniform(0.26, 0.38) - 0.06 * speed)
+        j = int(o * SR)
+        m = min(len(c), n - j)
+        y[j: j + m] += a * c[:m]
+    if held:
+        y = addp(y, impact(rng, **CUBE_BODY, contact_ms=0.6, dur=0.04, grit=0.0), 0.45)
+    y = lowpass(y, 9000, 2)  # air absorption + microphone
+    return y / (np.max(np.abs(y)) + 1e-12)
+
+
+def scrape(rng, w):
+    """Sliding layer: stick-slip friction of plastic on plastic. A Poisson train of tiny contacts
+    whose rate and strength follow the layer's angular speed w (rad/s, per sample)."""
+    n = len(w)
+    drive = np.clip(w / 30.0, 0, 1.4)
+    rate = 250 + 1350 * np.minimum(drive, 1.0)  # distinct slips per second
+    idx = np.flatnonzero(rng.random(n) < rate / SR)
+    amp = rng.gamma(2.0, 0.5, len(idx)) * drive[idx] ** 1.1
+    out = np.zeros(n)
+    grp = rng.integers(0, 4, len(idx))
+    for g in range(4):  # a few different contact patches
+        kern = cubie_contact(rng, contact_ms=0.09, dur=0.006, grit=0.0)
+        a = np.zeros(n)
+        a[idx[grp == g]] = amp[grp == g]
+        out += signal.fftconvolve(a, kern)[:n]
+    rub = bandpass(rng.normal(0, 1, n + 2048), 900, 6000, 2)[2048:]
+    rub /= np.std(rub) + 1e-9
+    out += 0.18 * rub * drive
+    return lowpass(out, 10000, 2)
+
+
 def make_ir(rng, rt60=0.55, dur=1.1, predelay_ms=4.0):
     """Stereo room impulse response: early reflections + frequency-dependent decaying tail."""
     n = int(dur * SR)
@@ -161,14 +248,15 @@ class Perspective:
         right = fwd.cross(Vector((0, 0, 1))).normalized()
         x = v.dot(right) / max(0.05, v.dot(fwd))
         pan = max(-1.0, min(1.0, x / 0.55)) * 0.65
-        g = (d_ref / d) ** 0.9
-        return max(0.25, min(1.8, g)), pan
+        # film-style perspective: closer is louder, but much gentler than the free-field
+        # 1/d law, so cuts between close-ups and wides do not jump in level
+        g = (d_ref / d) ** 0.5
+        return max(0.5, min(1.4, g)), pan
 
 
 # ----------------------------------------------------------------------------- the score
 class Foley:
-    CUBE_MODES = dict(freqs=[1850, 2930, 4120, 5650, 7400, 9800], taus=[0.016, 0.011, 0.0075, 0.005, 0.0036, 0.0022], amps=[1.0, 0.85, 0.62, 0.42, 0.25, 0.12])
-    HELD_BODY = dict(freqs=[430, 760, 1180], taus=[0.010, 0.007, 0.005], amps=[0.55, 0.4, 0.25])
+    SCRAPE_GAIN = 0.034
     PAD_TAP = dict(freqs=[820, 1450, 2380], taus=[0.0045, 0.0032, 0.0022], amps=[1.0, 0.6, 0.3])
     DESK = dict(freqs=[150, 265, 410, 630, 980], taus=[0.045, 0.032, 0.022, 0.015, 0.010], amps=[0.9, 0.7, 0.5, 0.35, 0.2])
 
@@ -185,13 +273,11 @@ class Foley:
         return self.c.cube_world(t).translation
 
     def clack(self, t, strength, pos=None, held=True):
-        r = self.rng
-        y = modal(r, **self.CUBE_MODES, dur=0.09, noise=0.45, noise_ms=0.7)
-        if held:  # hands damp the cube and add a lower body component
-            y = addp(0.8 * y, modal(r, **self.HELD_BODY, dur=0.05, noise=0.1), 0.35)
+        speed = min(1.0, max(0.0, (strength - 0.55) / 0.5))  # 0 = gentle capture .. 1 = fast capture
+        y = capture_click(self.rng, speed, held)
         g, pan = self.persp.gain_pan(pos if pos is not None else self._cube_pos(t), t)
         self.mix.stem = "cube_click"
-        self.mix.place(y, t, 0.42 * strength * g, pan, wet=0.16)
+        self.mix.place(y, t, 0.30 * strength * g, pan, wet=0.16)
         self.events.append((t, "clack", strength))
 
     def tap(self, t, strength, pos=None, kind="pad"):
@@ -207,7 +293,7 @@ class Foley:
         r = self.rng
         y = modal(r, **self.DESK, dur=0.35, noise=0.4, noise_ms=1.6, noise_band=(300, 6000), attack_ms=0.3)
         if with_cube:
-            y = addp(0.55 * y, modal(r, **self.CUBE_MODES, dur=0.08, noise=0.3), 0.6)
+            y = addp(0.55 * y, capture_click(r, 0.3, held=False), 0.45)
         if hand:  # robot fingertip pads + shell on the desk
             y = addp(0.7 * lowpass(y, 2500, 2), modal(r, **self.PAD_TAP, dur=0.04, noise=0.2), 0.25)
         g, pan = self.persp.gain_pan(pos, t)
@@ -215,22 +301,27 @@ class Foley:
         self.mix.place(y, t, 0.30 * strength * g, pan, wet=0.22)
         self.events.append((t, "desk", strength))
 
-    def slide(self, t0, t1, omega_fn, pos, strength=1.0, band=(1700, 9500)):
-        """Plastic-on-plastic sliding noise, level follows angular speed."""
+    def slide(self, t0, t1, omega_fn, pos, strength=1.0, grip=False):
+        """Sound of something sliding, level and texture following the angular speed.
+
+        Layers: plastic stick-slip scrape (granular). Grip (rubber pads on the cube while
+        the whole cube turns in the hands): a faint, dull rustle."""
         n = int((t1 - t0) * SR)
         if n <= 8:
             return
         ts = t0 + np.arange(n) / SR
         w = np.array([abs(omega_fn(x)) for x in ts[::48]])
         w = np.interp(np.arange(n), np.arange(0, n, 48)[: len(w)], w)
-        env = np.clip(w / 30.0, 0, 1.4) ** 1.25
-        # rough texture: plastic irregularities at ~ angle-proportional rate
-        tex = 1.0 + 0.35 * np.sin(np.cumsum(w) / SR * 22.0 + self.rng.uniform(0, 6))
-        nz = bandpass(self.rng.normal(0, 1, n + 2048), band[0], band[1], 2)[2048:]
-        nz /= np.std(nz) + 1e-9
         g, pan = self.persp.gain_pan(pos, t0)
-        self.mix.stem = "cube_slide"
-        self.mix.place(0.016 * strength * env * tex * nz, t0, g, pan, wet=0.2)
+        if grip:
+            env = np.clip(w / 30.0, 0, 1.4) ** 1.25
+            nz = bandpass(self.rng.normal(0, 1, n + 2048), 500, 3500, 2)[2048:]
+            nz /= np.std(nz) + 1e-9
+            self.mix.stem = "cube_slide"
+            self.mix.place(0.016 * strength * env * nz, t0, g, pan, wet=0.2)
+        else:
+            self.mix.stem = "cube_slide"
+            self.mix.place(self.SCRAPE_GAIN * strength * scrape(self.rng, w), t0, g, pan, wet=0.2)
         self.events.append((t0, "slide", strength))
 
     # ---------------------------------------------------------------- score sections
@@ -283,7 +374,7 @@ class Foley:
                 self.tap(g1 - 0.010, 0.5)
             r0, r1 = ins["rot"]
             # the whole cube turning in the hands: faint grip creak
-            self.slide(r0, r1, lambda x, r0=r0, r1=r1: P.QUARTER * P.min_jerk_d((x - r0) / (r1 - r0)) / (r1 - r0) * 3.0, self._cube_pos(r0), strength=0.6, band=(500, 3500))
+            self.slide(r0, r1, lambda x, r0=r0, r1=r1: P.QUARTER * P.min_jerk_d((x - r0) / (r1 - r0)) / (r1 - r0) * 3.0, self._cube_pos(r0), strength=1.6, grip=True)
         # set down on the desk
         t_down = T["down"][1]
         self.desk_hit(t_down - 0.004, 0.55, self._cube_pos(t_down), with_cube=True)
@@ -301,11 +392,11 @@ class Foley:
         n_ctl = int(self.dur * rate) + 2
         ts = np.arange(n_ctl) / rate
         groups = {
-            "arm_R": (["uparm_R", "forearm_R", "wroll_R", "hand_R"], 210.0, 0, db(-44)),
-            "arm_L": (["uparm_L", "forearm_L", "wroll_L", "hand_L"], 196.0, 0, db(-44)),
+            "arm_R": (["uparm_R", "forearm_R", "wroll_R", "hand_R"], 210.0, 0, db(-38)),
+            "arm_L": (["uparm_L", "forearm_L", "wroll_L", "hand_L"], 196.0, 0, db(-38)),
             "fing_R": ([f"{f}{k}_R" for f in ("thumb", "index", "middle", "ring", "pinky") for k in (1, 2, 3)], 560.0, 0, db(-52)),
             "fing_L": ([f"{f}{k}_L" for f in ("thumb", "index", "middle", "ring", "pinky") for k in (1, 2, 3)], 530.0, 0, db(-52)),
-            "head": (["neck", "head"], 290.0, 0, db(-46)),
+            "head": (["neck", "head"], 290.0, 0, db(-40)),
             "torso": (["spine", "chest"], 140.0, 0, db(-50)),
         }
         prev = None
@@ -338,9 +429,13 @@ class Foley:
             tone = np.sin(ph * (1 + wob)) + 0.35 * np.sin(2 * ph + 0.4) + 0.14 * np.sin(3 * ph + 1.1) + 0.07 * np.sin(4.73 * ph)
             whir = bandpass(self.rng.normal(0, 1, n), 300, 2600, 2)
             whir /= np.std(whir)
+            # gear mesh: the tooth impacts modulate the mechanical noise at the mesh rate, which
+            # gives a buzzy whir rather than a pure electronic tone
+            whir *= 1.0 + 0.35 * np.sin(ph)
             amp = (s / (s + 4.0)) ** 1.2
-            amp = np.convolve(amp, np.ones(384) / 384, mode="same")  # 8 ms smoothing
-            sig = (0.8 * tone + 0.35 * whir) * amp
+            # rotor + gear-train inertia: the whir builds up over ~20 ms and decays over ~40 ms
+            amp = _attack_release(amp, attack_s=0.020, release_s=0.040)
+            sig = (0.4 * tone + 0.55 * whir) * amp
             sig = lowpass(highpass(sig, 80, 2), 5500, 4)
             gp = np.array([self.persp.gain_pan(self._source_pos(g, x), x) for x in np.arange(0, self.dur, 0.05)])
             gx = np.arange(0, self.dur, 0.05)
@@ -406,7 +501,7 @@ class Foley:
             # 100 Hz electrical hum from the LED drivers (barely there)
             mains = np.sin(2 * np.pi * 100 * tt + ch * 0.4) + 0.3 * np.sin(2 * np.pi * 300 * tt)
             x = db(-64) * hvac + db(-71) * air + db(-67) * city * swell + db(-68) * car * car_env + db(-82) * mains
-            self.mix.amb[ch] += x
+            self.mix.amb[ch] += db(-7) * x
         self.mix.stems["room_tone"] = self.mix.amb.copy()
 
     # ---------------------------------------------------------------- render
@@ -423,25 +518,68 @@ class Foley:
         return out
 
     @staticmethod
-    def master(x, target_lufs=-23.0, ceiling_dbtp=-1.5):
-        """Loudness normalise (BS.1770 integrated) and true-peak limit."""
-        x = x * db(target_lufs - integrated_lufs(x))
+    def master(x, target_lufs=-23.0, ceiling_dbtp=-1.5, comp_thresh_db=-24.0, comp_ratio=2.0, return_gain=False):
+        """Film-style master: gentle program compression (so the dense solve does not jump
+        far above the rest of the film), BS.1770 loudness normalisation, true-peak limiting.
+
+        Returns the mastered signal (and, with return_gain, the per-sample gain applied,
+        so stems can be scaled exactly like the mix)."""
+        g0 = db(target_lufs - integrated_lufs(x))
+        comp = _compressor_gain(x * g0, comp_thresh_db, comp_ratio)
+        y = x * g0 * comp
+        g1 = db(target_lufs - integrated_lufs(y))
+        y = y * g1
         # look-ahead brick-wall limiter on 4x oversampled peaks
         ceil = db(ceiling_dbtp)
-        up = signal.resample_poly(x, 4, 1, axis=1)
+        up = signal.resample_poly(y, 4, 1, axis=1)
         peak = np.max(np.abs(up), axis=0)
-        peak = np.maximum.reduceat(peak, np.arange(0, len(peak), 4))[: x.shape[1]]
+        peak = np.maximum.reduceat(peak, np.arange(0, len(peak), 4))[: y.shape[1]]
         gr = np.minimum(1.0, ceil / np.maximum(peak, 1e-9))
         # attack 1.5 ms look-ahead, release 80 ms
         la = int(0.0015 * SR)
         gr_la = _min_filter(gr, la)
-        g = np.empty_like(gr_la)
+        lim = np.empty_like(gr_la)
         cur = 1.0
         rel = math.exp(-1 / (0.08 * SR))
         for i, v in enumerate(gr_la):
             cur = v if v < cur else v + (cur - v) * rel
-            g[i] = cur
-        return x * g
+            lim[i] = cur
+        gain = g0 * g1 * comp * lim
+        return (x * gain, gain) if return_gain else x * gain
+
+
+def _compressor_gain(x, thresh_db, ratio, win_ms=20.0, attack_ms=5.0, release_ms=180.0, knee_db=6.0):
+    """Feed-forward RMS compressor (soft knee), gain computed on a 1 ms control grid."""
+    hop = SR // 1000
+    p = np.mean(x ** 2, axis=0)
+    w = int(win_ms / 1000 * SR)
+    p = np.convolve(p, np.ones(w) / w, mode="same")[::hop]
+    lvl = 10 * np.log10(p + 1e-14)
+    over = lvl - thresh_db
+    gr = np.where(over <= -knee_db / 2, 0.0,
+                  np.where(over >= knee_db / 2, over, (over + knee_db / 2) ** 2 / (2 * knee_db)))
+    target = -gr * (1 - 1 / ratio)  # dB, <= 0
+    a = math.exp(-1 / attack_ms)
+    r = math.exp(-1 / release_ms)
+    g = np.empty_like(target)
+    cur = 0.0
+    for i, v in enumerate(target):
+        cur = v + (cur - v) * (a if v < cur else r)
+        g[i] = cur
+    n = x.shape[1]
+    return db(np.interp(np.arange(n), np.arange(len(g)) * hop, g))
+
+
+def _attack_release(x, attack_s, release_s):
+    """One-pole envelope follower with separate rise and fall times."""
+    a = math.exp(-1 / (attack_s * SR))
+    r = math.exp(-1 / (release_s * SR))
+    out = np.empty_like(x)
+    cur = 0.0
+    for i, v in enumerate(x):
+        cur = v + (cur - v) * (a if v > cur else r)
+        out[i] = cur
+    return out
 
 
 def _min_filter(x, half):

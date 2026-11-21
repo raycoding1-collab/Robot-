@@ -36,22 +36,28 @@ robot_rubiks/       -> the library (see below)
 
 `make_sound.py` renders 48 kHz / 24-bit stereo foley from the same simulation the picture uses:
 
-- Each layer turn produces a plastic slide whose level follows the layer's angular speed, then a modal-synthesis clack at the exact instant the magnets capture it.
-- Fingertip taps, the cube lifting off and landing on the desk, and the hands settling on the desk.
-- Servo and gear whir for six joint groups, with pitch and level driven by the rig's real joint velocities.
-- A power-on relay, a cooling fan that spins up while the robot thinks, and room tone (HVAC plus a distant car through the glass).
-- The microphone follows the edit: distance law and stereo position follow the active camera, with a convolution room reverb (RT60 ≈ 0.55 s).
+- **Layer turns.** While a layer slides, it makes a stick-slip scrape: a stream of tiny plastic contacts whose rate and strength follow the layer's angular speed. When the magnets capture it, 2–4 of its cubies seat against their neighbours within about 3 ms. Each seating is a Hertzian contact (0.26–0.38 ms, the contact time of a 10 g ABS cubie) exciting hand-damped shell modes (Q ≈ 10–20), plus the low "thock" of the cube body. The result is a short plastic clack, not a ringing ping.
+- **Handling.** Fingertip taps, the rubber grip rustling while the cube turns in the hands, the cube lifting off and landing on the desk, and the hands settling on the desk.
+- **Motors.** Servo and gear whir for six joint groups. Pitch and level follow the rig's real joint velocities, and the whir builds up and dies away with rotor inertia (20 ms / 40 ms). Gear-mesh modulation gives a mechanical buzz rather than an electronic tone.
+- **Electronics and room.** A power-on relay, a cooling fan that spins up while the robot thinks, and room tone (HVAC plus a distant car through the glass).
+- **Perspective.** The microphone follows the edit with a film-style perspective (gentler than the 1/d law, so cuts don't jump in level) and a convolution room reverb (RT60 ≈ 0.55 s).
 
-It is mastered to EBU R128 (−23 LUFS, true peak ≤ −1 dBTP). `tools/verify_sound.py` checks 21 properties:
+The master uses gentle program compression (2:1, about 2 dB during the solve only), EBU R128 normalisation (−23 LUFS) and a true-peak limiter (≤ −1.5 dBTP). The busy solve sits about 9 LU above the quiet inspection instead of jumping out.
 
-- duration matched to the picture
-- no clipping, DC offset, pops or steady whine
-- loudness, confirmed independently with ffmpeg
-- all 28 clicks detected within 3 ms of the physics, each at the frame where the layer reaches 90°
-- no unexplained transients
-- mix balance per stem
+`tools/verify_sound.py` checks 25 properties:
 
-The latest report is in `renders/foley_report.txt`.
+- **Format and duration:** duration matched to the picture.
+- **Artefacts:** no clipping, DC offset, pops or steady whine.
+- **Loudness:** confirmed independently with ffmpeg.
+- **Sync:** all 28 clicks detected within 3 ms of the physics, each at the frame where the layer reaches 90°. No unexplained transients.
+- **Mix balance:** checked per stem.
+- **Listening comfort and realism:**
+  - no loudness jump into the solve (≤ 12 LU)
+  - clicks are damped contacts (ring-down ≤ 25 ms, resonance Q ≤ 30)
+  - the turning sound is grainy friction rather than hiss (envelope-normalised kurtosis ≥ 4.5)
+  - no pitch region dominates the solve (≤ 20 % in any third-octave band)
+
+The first sound version failed all four comfort checks: a +22.9 LU jump, clicks ringing at Q 88 for 65 ms, smooth hiss, and 35 % of the energy at 2 kHz. The latest report is in `renders/foley_report.txt`. `python render.py --reaudio` swaps a new `foley.wav` into the finished MP4s without re-encoding the picture.
 
 ## Running it
 

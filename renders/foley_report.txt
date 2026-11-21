@@ -1,24 +1,28 @@
 [PASS] duration matches picture: 20.87500s vs 20.87500s (501 frames)
 [PASS] finite samples: no NaN/Inf
-[PASS] DC offset: 2.32e-07
-[PASS] sample peak <= -1 dBFS: -6.16 dBFS
-[PASS] true peak <= -1 dBTP: -6.15 dBTP (4x oversampled)
+[PASS] DC offset: 1.19e-05
+[PASS] sample peak <= -1 dBFS: -1.53 dBFS
+[PASS] true peak <= -1 dBTP: -1.50 dBTP (4x oversampled)
 [PASS] no clipped samples: 0
 [PASS] integrated loudness (EBU R128 short-form): -23.00 LUFS (target -23)
-[PASS] ffmpeg EBU R128 agrees: I=-23.0 LUFS, TP=-6.1 dBFS
+[PASS] ffmpeg EBU R128 agrees: I=-23.0 LUFS, TP=-1.5 dBFS
 [PASS] no discontinuities / pops: 0 ultrasonic spikes outside impact events
-[PASS] mono-compatible stereo: L/R correlation 0.97
-[PASS] room tone audible but quiet: -56.7 dBFS RMS before power-on
+[PASS] mono-compatible stereo: L/R correlation 0.95
+[PASS] room tone audible but quiet: -52.9 dBFS RMS before power-on
 [PASS] every layer-turn click detected: 28/28 found
-[PASS] click timing vs physics: mean -0.39 ms, max |2.86| ms
+[PASS] click timing vs physics: mean -0.92 ms, max |1.49| ms
 [PASS] click occurs when the layer reaches 90 deg in the animation: 28/28 turns
 [PASS] no unexplained transients: 0 stray onsets
-      click peak (median) -8.2 dBFS | slide rms -35.5 | servo rms (solve) -50.1, loudest 100 ms -44.5 | tap peak -21.5 | room tone rms -56.6
-[PASS] clicks are the loudest cube sound: median click peak -8.2 dBFS
-[PASS] slide noise sits under the clicks: -27.3 dB re click peak
-[PASS] servo whir is subtle: loudest servo 100 ms -36.2 dB re click peak
-[PASS] finger taps softer than clicks: -13.3 dB re click peak
-[PASS] room tone level: -56.6 dBFS RMS
-[PASS] no audible steady whine (1-8 kHz): max tonal prominence 8.9 dB
+      click peak (median) -2.4 dBFS | slide rms -22.1 | servo rms (solve) -36.6, loudest 100 ms -32.0 | tap peak -12.7 | room tone rms -53.2
+[PASS] clicks are the loudest cube sound: median click peak -2.4 dBFS
+[PASS] slide noise sits under the clicks: -19.7 dB re click peak
+[PASS] servo whir is subtle: loudest servo 100 ms -29.5 dB re click peak
+[PASS] finger taps softer than clicks: -10.3 dB re click peak
+[PASS] room tone level: -53.2 dBFS RMS
+[PASS] no audible steady whine (1-8 kHz): max tonal prominence 7.4 dB
+[PASS] no loudness jump into the solve: solve is +9.3 LU above the inspection (limit +12)
+[PASS] clicks are short contacts, not ringing tones: ring-down to -40 dB 16.6 ms (limit 25), strongest resonance Q 9 (limit 30)
+[PASS] turning sound is grainy plastic friction, not hiss: median envelope-normalised kurtosis 5.2 (smooth hiss ~3, limit 4.5)
+[PASS] no dominant pitch region in the solve: largest third-octave band 16.1 % of energy at 1260 Hz (limit 20 %)
 
-21/21 checks passed
+25/25 checks passed
