@@ -72,9 +72,23 @@ def render(a):
 
 def encode(a):
     frames = os.path.join(a.out, "frames", "f%04d.png")
+    # ffmpeg stops reading an image sequence at the first gap and would cut the audio
+    # to match, so refuse to encode unless every frame is present and complete.
+    sys.path.insert(0, os.path.join(HERE, "tools"))
+    from render_watchdog import png_complete
+
+    fdir = os.path.join(a.out, "frames")
+    nums = sorted(int(f[1:5]) for f in os.listdir(fdir) if f.startswith("f") and f.endswith(".png"))
+    first, last = a.start or 1, a.end or (nums[-1] if nums else 0)
+    bad = [n for n in range(first, last + 1) if not png_complete(frames % n)]
+    if not nums or bad:
+        sys.exit(f"encode: {len(bad)} frames missing or incomplete in {first}-{last}: {bad[:20]}")
+    cmd_start = ["-start_number", str(first)] if first != 1 else []
     out = os.path.join(a.out, "robot_rubiks.mp4")
-    vf = "vignette=angle=PI/5.2:mode=forward,noise=alls=3:allf=t,format=yuv420p"
-    cmd = ["ffmpeg", "-y", "-framerate", "24", "-i", frames]
+    # H.264 4:2:0 needs even dimensions: the 66 % preview preset gives 1267x712, so drop the
+    # odd pixel column (lossless, unlike rescaling).
+    vf = "crop=trunc(iw/2)*2:trunc(ih/2)*2:0:0,vignette=angle=PI/5.2:mode=forward,noise=alls=3:allf=t,format=yuv420p"
+    cmd = ["ffmpeg", "-y", "-framerate", "24", *cmd_start, "-i", frames]
     audio = os.path.join(a.out, "foley.wav")
     if os.path.exists(audio):
         cmd += ["-i", audio, "-c:a", "aac", "-b:a", "192k", "-shortest"]

@@ -14,6 +14,7 @@ render.py           -> renders stills / the frame sequence, encodes the MP4 (+ s
 make_sound.py       -> synthesises renders/foley.wav from the same simulation
 tools/verify_sound.py -> objective audio QA (sync, loudness, artefacts, balance)
 tools/tune_grips.py -> optimiser that produced the hand grips used in the solve
+tools/render_watchdog.py -> keeps a long multi-worker render alive (restarts crashed or stalled workers)
 robot_rubiks/       -> the library (see below)
 ```
 
@@ -62,6 +63,7 @@ python build_scene.py --preset final          # writes robot_rubiks.blend
 python make_sound.py                           # writes renders/foley.wav
 python tools/verify_sound.py                   # audio QA report + plots
 python render.py --anim --preset final --gpu   # renders/frames/f0001.png ...
+python tools/render_watchdog.py --workers 2    # or: CPU workers that restart themselves after a crash
 python render.py --encode                      # renders/robot_rubiks.mp4 (with sound)
 ```
 
@@ -72,7 +74,7 @@ Presets (`robot_rubiks/render_setup.py`):
 | preset | resolution | samples | notes |
 | --- | --- | --- | --- |
 | draft | 960×540 | 16 | fast GI |
-| preview | 1280×720 | 20 (adaptive) | fast GI, reduced bounces. Used for the CPU render in `renders/`. |
+| preview | 66 % (1267×712; the MP4 is cropped to 1266×712) | 20 (adaptive) | fast GI, reduced bounces. Used for the CPU render in `renders/`. |
 | final | 1920×1080 | 256 | full GI. GPU recommended (OptiX/CUDA/HIP/Metal auto-detected with `--gpu`). |
 | cinema4k | 3840×2160 | 512 | |
 

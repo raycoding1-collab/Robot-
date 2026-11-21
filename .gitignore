@@ -5,3 +5,4 @@ renders/frames/
 renders/stills/
 renders/*.log
 renders/foley_stems.npz
+renders/watchdog.status
