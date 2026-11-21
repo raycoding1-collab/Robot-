@@ -6,3 +6,5 @@ renders/stills/
 renders/*.log
 renders/foley_stems.npz
 renders/watchdog.status
+renders/*.part.mp4
+renders/x264_2pass*
