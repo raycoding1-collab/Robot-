@@ -34,30 +34,37 @@ robot_rubiks/       -> the library (see below)
 
 ## Sound
 
-`make_sound.py` renders 48 kHz / 24-bit stereo foley from the same simulation the picture uses:
+`make_sound.py` renders 48 kHz / 24-bit stereo foley from the same simulation the picture uses. One rule applies throughout: there are no steady pure tones in the mix (no motor whine, fan blade tone or mains hum).
 
-- **Layer turns.** While a layer slides, it makes a stick-slip scrape: a stream of tiny plastic contacts whose rate and strength follow the layer's angular speed. When the magnets capture it, 2–4 of its cubies seat against their neighbours within about 3 ms. Each seating is a Hertzian contact (0.26–0.38 ms, the contact time of a 10 g ABS cubie) exciting hand-damped shell modes (Q ≈ 10–20), plus the low "thock" of the cube body. The result is a short plastic clack, not a ringing ping.
-- **Handling.** Fingertip taps, the rubber grip rustling while the cube turns in the hands, the cube lifting off and landing on the desk, and the hands settling on the desk.
-- **Motors.** Servo and gear whir for six joint groups. Pitch and level follow the rig's real joint velocities, and the whir builds up and dies away with rotor inertia (20 ms / 40 ms). Gear-mesh modulation gives a mechanical buzz rather than an electronic tone.
-- **Electronics and room.** A power-on relay, a cooling fan that spins up while the robot thinks, and room tone (HVAC plus a distant car through the glass).
+- **Layer turns.** While a layer slides, it makes a soft, dark stick-slip scrape (lubricated plastic): distinct slips whose rate and strength follow the layer's angular speed. When the magnets capture it, 2–4 of its cubies seat against their neighbours within about 3 ms. Each seating is a Hertzian contact (0.32–0.45 ms) exciting hand-damped shell modes (Q ≈ 10–20), plus the low "thock" of the cube body, so the result is a short plastic clack, not a ringing ping. A 1.5 ms transient shaper softens only the first instant of each contact.
+- **Robot motors.** A faint, pitch-free mechanical whirr. It is silent while a joint holds or creeps, fades in only for real movements (arms above 1.5 rad/s, fingers above 3 rad/s), and builds up and dies away with rotor inertia.
+- **Handling.** Soft rubber fingertip taps, an almost inaudible grip creak (the cube turns rigidly in the hands), the cube lifting off and being set down on the desk, and the hands settling. Lifting the hands off the desk makes no sound.
+- **Electronics and room.** A tiny power-on relay, a cooling fan heard only as faint airflow, and a quiet room tone (HVAC plus a distant car through the glass).
 - **Perspective.** The microphone follows the edit with a film-style perspective (gentler than the 1/d law, so cuts don't jump in level) and a convolution room reverb (RT60 ≈ 0.55 s).
 
-The master uses gentle program compression (2:1, about 2 dB during the solve only), EBU R128 normalisation (−23 LUFS) and a true-peak limiter (≤ −1.5 dBTP). The busy solve sits about 9 LU above the quiet inspection instead of jumping out.
+The mix keeps the film's quiet moments quiet. The robot inspecting the cube is near-silent, as it would be in a real quiet room. The master uses EBU R128 normalisation (−23 LUFS) and a true-peak limiter.
 
-`tools/verify_sound.py` checks 25 properties:
+`tools/verify_sound.py` checks 27 properties:
 
-- **Format and duration:** duration matched to the picture.
-- **Artefacts:** no clipping, DC offset, pops or steady whine.
+- **Format and artefacts:** duration matched to the picture; no clipping, DC offset or pops.
 - **Loudness:** confirmed independently with ffmpeg.
 - **Sync:** all 28 clicks detected within 3 ms of the physics, each at the frame where the layer reaches 90°. No unexplained transients.
 - **Mix balance:** checked per stem.
 - **Listening comfort and realism:**
-  - no loudness jump into the solve (≤ 12 LU)
+  - no steady tone anywhere in the film (scanned in 3 s windows)
+  - nothing outside the solve louder than −10 LU against the film's loudness
+  - robot motors at most −16 LU at their loudest
   - clicks are damped contacts (ring-down ≤ 25 ms, resonance Q ≤ 30)
-  - the turning sound is grainy friction rather than hiss (envelope-normalised kurtosis ≥ 4.5)
-  - no pitch region dominates the solve (≤ 20 % in any third-octave band)
+  - the turning sound is grainy friction, not hiss
+  - no pitch region dominates the solve
+  - no extreme loudness jump into the solve
 
-The first sound version failed all four comfort checks: a +22.9 LU jump, clicks ringing at Q 88 for 65 ms, smooth hiss, and 35 % of the energy at 2 kHz. The latest report is in `renders/foley_report.txt`. `python render.py --reaudio` swaps a new `foley.wav` into the finished MP4s without re-encoding the picture.
+The two earlier sound versions fail these checks:
+
+- **First version:** ringing clicks (Q 88), a 2 kHz pile-up, hiss, and a 16 dB steady tone.
+- **Second version:** motor whine through the whole film (a 14 dB tone), and handling sounds as loud as the film itself.
+
+The latest report is in `renders/foley_report.txt`. `python render.py --reaudio` swaps a new `foley.wav` into the finished MP4s without re-encoding the picture.
 
 ## Running it
 

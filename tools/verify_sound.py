@@ -69,6 +69,21 @@ def onsets(x, band=(1000, 12000), hop_ms=1.0, win_ms=2.0, ratio_db=9.0, floor_db
     return np.array(out) * hop / SR, edb
 
 
+def whine(x, lo=150, hi=8000):
+    """Largest steady tonal line in the film: (prominence dB over the median-filtered floor, time s)."""
+    m = x.mean(axis=0)
+    best = (0.0, 0.0)
+    for t0 in np.arange(0, len(m) / SR - 3.0 + 1e-9, 1.5):
+        seg = m[int(t0 * SR): int((t0 + 3.0) * SR)]
+        fz, Pz = signal.welch(seg, SR, nperseg=16384)
+        band = (fz > lo) & (fz < hi)
+        pdb = 10 * np.log10(Pz[band] + 1e-20)
+        p = float(np.max(pdb - signal.medfilt(pdb, 101)))
+        if p > best[0]:
+            best = (p, t0 + 1.5)
+    return best
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", default=os.path.join(__file__.rsplit("/tools/", 1)[0], "renders"))
@@ -195,14 +210,10 @@ def main():
     check("finger taps softer than clicks", -24 <= tap_pk - cp <= -3, f"{tap_pk - cp:+.1f} dB re click peak")
     check("room tone level", -66 <= room <= -50, f"{room:.1f} dBFS RMS")
 
-    # tonal whine check: no steady narrow-band line > 15 dB above the local spectral floor (1-8 kHz)
-    seg = x.mean(axis=0)[int(6.0 * SR): int(9.0 * SR)]
-    fz, Pz = signal.welch(seg, SR, nperseg=16384)
-    band = (fz > 1000) & (fz < 8000)
-    pdb = 10 * np.log10(Pz[band] + 1e-20)
-    floor = signal.medfilt(pdb, 101)
-    prom = float(np.max(pdb - floor))
-    check("no audible steady whine (1-8 kHz)", prom < 15, f"max tonal prominence {prom:.1f} dB")
+    # tonal whine check over the WHOLE film (3 s windows, 1.5 s apart): no steady narrow-band line
+    # more than 12 dB above the local spectral floor between 150 Hz and 8 kHz
+    prom, at = whine(x)
+    check("no audible steady whine anywhere (150 Hz - 8 kHz)", prom < 12, f"max tonal prominence {prom:.1f} dB at {at:.1f} s (limit 12)")
 
     # 6. listening comfort and realism of the cube sound
     def kdb(v, t0, t1):
@@ -210,7 +221,27 @@ def main():
         return -0.691 + 10 * math.log10(np.sum(np.mean(y ** 2, axis=1)) + 1e-20)
     insp0, solve0, solve1 = 3.0, s.t_start - 0.3, s.t_end + 0.2
     jump = kdb(x, solve0, solve1) - kdb(x, insp0, solve0)
-    check("no loudness jump into the solve", jump <= 12.0, f"solve is {jump:+.1f} LU above the inspection (limit +12)")
+    # The inspection is a robot quietly turning a cube in rubber fingers in a quiet room, so it is
+    # near-silent; lifting it to narrow this contrast is what made the handling and motor sounds
+    # painful. This only guards against extremes (a quiet room vs. a cube at 0.5 m is ~20 dB).
+    check("no extreme loudness jump into the solve", jump <= 22.0, f"solve is {jump:+.1f} LU above the inspection (limit +22)")
+    # Outside the solve nothing may come close to the level the listener sets the volume by, and
+    # the robot's own motors must stay a faint texture. Momentary (400 ms) loudness, re integrated.
+    # (The version that sounded painful throughout had the cube set-down at +0.4 LU and motor
+    # whine all through the film.)
+    def momentary_max(v, outside=(solve0, solve1)):
+        yk = sound.k_weight(v)
+        best = (-200.0, 0.0)
+        for t0 in np.arange(0, v.shape[1] / SR - 0.4, 0.05):
+            if outside[0] - 0.4 < t0 < outside[1]:
+                continue
+            l = -0.691 + 10 * math.log10(np.sum(np.mean(yk[:, int(t0 * SR): int((t0 + 0.4) * SR)] ** 2, axis=1)) + 1e-20)
+            best = max(best, (l, t0 + 0.2))
+        return best[0] - lufs, best[1]
+    l, t = momentary_max(x)
+    check("nothing loud outside the solve", l <= -10.0, f"loudest 400 ms outside the solve {l:+.1f} LU re programme at {t:.2f} s (limit -10)")
+    l, t = momentary_max(stems["servo"], outside=(-1, -1))
+    check("robot motors are a faint texture", l <= -16.0, f"loudest 400 ms of motor sound {l:+.1f} LU re programme at {t:.2f} s (limit -16)")
     # each click must be a short damped plastic contact, not a ringing tone
     rings, qs = [], []
     ck = stems["cube_click"].mean(axis=0)
