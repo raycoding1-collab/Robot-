@@ -65,6 +65,7 @@ python tools/verify_sound.py                   # audio QA report + plots
 python render.py --anim --preset final --gpu   # renders/frames/f0001.png ...
 python tools/render_watchdog.py --workers 2    # or: CPU workers that restart themselves after a crash
 python render.py --encode                      # renders/robot_rubiks.mp4 (with sound)
+python render.py --encode --target-mb 25      # size-capped copy (two-pass, lands just under 25 MB)
 ```
 
 Inside Blender, open `robot_rubiks.blend`. The cuts are timeline markers bound to cameras.
